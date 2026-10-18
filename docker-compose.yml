@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL + pgvector ──────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag_postgres
+    environment:
+      POSTGRES_DB:       ${PG_DB:-ragdb}
+      POSTGRES_USER:     ${PG_USER:-raguser}
+      # No default here on purpose: a committed default password is
+      # the kind of thing that ends up in a public demo deployment.
+      # Set PG_PASSWORD in your .env before running `docker compose up`.
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?Set PG_PASSWORD in your .env file}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-raguser} -d ${PG_DB:-ragdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── FastAPI Backend ────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag_backend
+    # --reload (auto-restart on file change) only makes sense for local
+    # dev and adds overhead + a file-watcher process in prod. Workers=4
+    # gives real concurrency for prod; dev keeps a single reloading worker.
+    command: >
+      sh -c "if [ \"$$ENVIRONMENT\" = \"production\" ]; then
+               uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4;
+             else
+               uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload;
+             fi"
+    environment:
+      OPENAI_API_KEY:   ${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env file}
+      PG_HOST:          postgres
+      PG_PORT:          5432
+      PG_DB:            ${PG_DB:-ragdb}
+      PG_USER:          ${PG_USER:-raguser}
+      PG_PASSWORD:      ${PG_PASSWORD:?Set PG_PASSWORD in your .env file}
+      ENVIRONMENT:      ${ENVIRONMENT:-development}
+      CORS_ORIGINS:     ${CORS_ORIGINS:-*}
+      MAX_UPLOAD_MB:    ${MAX_UPLOAD_MB:-25}
+      RATE_LIMIT_CHAT:  ${RATE_LIMIT_CHAT:-20/minute}
+      RATE_LIMIT_UPLOAD: ${RATE_LIMIT_UPLOAD:-5/minute}
+      API_KEY:          ${API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Gradio Frontend ────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag_frontend
+    command: python frontend/app.py
+    environment:
+      API_URL: http://backend:8000
+    ports:
+      - "7860:7860"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

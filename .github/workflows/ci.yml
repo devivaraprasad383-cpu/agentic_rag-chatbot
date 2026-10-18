@@ -1,0 +1,22 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  compile-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: Compile every backend/frontend file
+        run: python -m py_compile $(find backend frontend -name "*.py")
+      - name: Unit tests (eval metric maths)
+        run: pytest -q tests/test_metrics.py
+      - name: Benchmark harness smoke test (mock API, no real keys)
+        run: |
+          python tests/mock_api.py & sleep 1
+          python benchmarks/run_benchmarks.py --doc_id demo --api_url http://127.0.0.1:8765 \
+            --questions benchmarks/golden.example.json --output /tmp/r.json --warmup 1 --fail_under 0.8
+  # Add a second job here that boots `docker compose up`, waits on /ready,
+  # and runs benchmarks/run_benchmarks.py against the real stack with a
+  # real (CI-secret) OPENAI_API_KEY and the real golden.json once it exists.
